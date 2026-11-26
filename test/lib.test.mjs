@@ -142,7 +142,9 @@ test('unlock: member links are checked against their own studio and year', async
   assert.equal(await linkUnlocked({ n: 'Other Studio', y: 2026, u: code }, pub), false); // code copied to another studio
   assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2027, u: code }, pub), false);
   assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code, p: 1 }, pub), false);
-  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, ''), false); // site not set up
+  // Before the site has keys, the preview flag decides (the tool marks every link preview then).
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026 }, ''), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, p: 1 }, ''), false);
 });
 
 test('unlock: valid code verifies, wrong studio or year fails', async () => {

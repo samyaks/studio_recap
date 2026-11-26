@@ -76,3 +76,6 @@ input[type="range"] { padding: 0; }
 .tag.r { background: #e3f4ea; color: #1a7f45; }
 .tag.w { background: #fdf0dc; color: #a5560b; }
 footer { color: var(--muted); font-size: 14px; margin-top: 64px; }
+.legal h2 { margin-top: 40px; }
+.legal h3 { margin-top: 24px; font-size: 18px; }
+.legal li { margin-bottom: 8px; }

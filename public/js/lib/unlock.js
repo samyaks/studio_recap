@@ -50,8 +50,11 @@ export function cleanCode(code) {
 // its own studio name and year. A browser that can't check Ed25519 gets the benefit of the doubt
 // for a link that carries a code, so members on older phones don't see PREVIEW on a paid recap;
 // the owner's tool already refused to make unlocked links without a valid code.
+// Before the site has keys (no public key), nothing can be unlocked, so the old preview flag decides.
 export async function linkUnlocked(s, publicKeyB64) {
-  if (!s || !s.u || s.p || !publicKeyB64) return false;
+  if (!s) return false;
+  if (!publicKeyB64) return !s.p;
+  if (!s.u || s.p) return false;
   if (!(await ed25519Supported())) return true;
   return verifyUnlock(s.u, s.n, s.y, publicKeyB64);
 }

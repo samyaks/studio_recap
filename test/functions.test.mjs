@@ -1,0 +1,145 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { handleStripeWebhook, recapYear } from '../functions/api/stripe-webhook.js';
+import { handleClientError } from '../functions/api/client-error.js';
+import { signPayload, verifyStripeSignature } from '../server/stripe.js';
+import { makeUnlockCode } from '../server/sign-code.js';
+import { verifyUnlock } from '../public/js/lib/unlock.js';
+
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const PUB = publicKey.export({ format: 'jwk' }).x;
+const PEM = privateKey.export({ type: 'pkcs8', format: 'pem' });
+const SECRET = 'whsec_test';
+const NOW = Date.UTC(2026, 11, 3, 18, 0, 0);
+
+function kv() {
+  const m = new Map();
+  return { get: async (k) => m.get(k) ?? null, put: async (k, v) => { m.set(k, v); }, m };
+}
+
+function env(extra = {}) {
+  return { STRIPE_WEBHOOK_SECRET: SECRET, UNLOCK_PRIVATE_KEY: PEM, RESEND_API_KEY: 're_test', MAIL_FROM: 'Studio Recap <codes@example.com>', CONTACT_EMAIL: 'help@example.com', SITE_URL: 'https://recap.example.com/', ...extra };
+}
+
+function session(over = {}) {
+  return {
+    id: 'cs_test_1', payment_status: 'paid', created: NOW / 1000,
+    customer_details: { email: 'owner@studio.example' },
+    custom_fields: [
+      { key: 'studioname', type: 'text', text: { value: '  Juniper Yoga + Pilates ' } },
+      { key: 'recapyear', type: 'dropdown', dropdown: { value: '2026' } },
+    ],
+    ...over,
+  };
+}
+
+async function signedRequest(event, { secret = SECRET, t = Math.floor(NOW / 1000) } = {}) {
+  const body = JSON.stringify(event);
+  const sig = await signPayload(secret, t, body);
+  return new Request('https://recap.example.com/api/stripe-webhook', { method: 'POST', body, headers: { 'stripe-signature': `t=${t},v1=${sig}` } });
+}
+
+function mailer(status = 200) {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization }); return new Response('{}', { status }); };
+  return { sent, fetchImpl };
+}
+
+const paid = (s = session()) => ({ type: 'checkout.session.completed', data: { object: s } });
+
+test('stripe signature: right secret and fresh time pass, anything else fails', async () => {
+  const t = Math.floor(NOW / 1000);
+  const sig = await signPayload(SECRET, t, 'body');
+  assert.equal(await verifyStripeSignature('body', `t=${t},v1=${sig}`, SECRET, { now: NOW }), true);
+  assert.equal(await verifyStripeSignature('body2', `t=${t},v1=${sig}`, SECRET, { now: NOW }), false);
+  assert.equal(await verifyStripeSignature('body', `t=${t},v1=${sig}`, 'other', { now: NOW }), false);
+  assert.equal(await verifyStripeSignature('body', `t=${t},v1=${sig}`, SECRET, { now: NOW + 600_000 }), false);
+  assert.equal(await verifyStripeSignature('body', `t=${t},v0=${sig}`, SECRET, { now: NOW }), false);
+  assert.equal(await verifyStripeSignature('body', '', SECRET, { now: NOW }), false);
+  assert.equal(await verifyStripeSignature('body', `t=${t},v1=${sig}`, '', { now: NOW }), false);
+});
+
+test('webhook: a paid checkout emails a code that unlocks that studio and year', async () => {
+  const { sent, fetchImpl } = mailer();
+  const store = kv();
+  const res = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_SENT: store }), { fetchImpl, now: NOW });
+  assert.equal(res.status, 200);
+  assert.equal(sent.length, 1);
+  const mail = sent[0];
+  assert.equal(mail.url, 'https://api.resend.com/emails');
+  assert.equal(mail.auth, 'Bearer re_test');
+  assert.deepEqual(mail.body.to, ['owner@studio.example']);
+  assert.equal(mail.body.reply_to, 'help@example.com');
+  assert.match(mail.body.text, /https:\/\/recap\.example\.com\/create\.html/);
+  const code = mail.body.text.split('\n')[3];
+  assert.equal(await verifyUnlock(code, 'juniper yoga pilates', 2026, PUB), true);
+  assert.equal(await verifyUnlock(code, 'juniper yoga pilates', 2025, PUB), false);
+  // Stripe's retry of the same checkout sends nothing new.
+  const again = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_SENT: store }), { fetchImpl, now: NOW });
+  assert.equal(again.status, 200);
+  assert.equal(sent.length, 1);
+});
+
+test('webhook: the server-made code matches the command-line one', async () => {
+  const { sign } = await import('node:crypto');
+  const { unlockMessage } = await import('../public/js/lib/unlock.js');
+  const cli = sign(null, Buffer.from(unlockMessage('Any Studio', 2026)), privateKey).toString('base64url');
+  assert.equal(await makeUnlockCode(PEM, 'any studio', 2026), cli);
+});
+
+test('webhook: bad signatures, other events and unpaid checkouts send nothing', async () => {
+  const { sent, fetchImpl } = mailer();
+  const bad = await handleStripeWebhook(await signedRequest(paid(), { secret: 'wrong' }), env(), { fetchImpl, now: NOW });
+  assert.equal(bad.status, 400);
+  const other = await handleStripeWebhook(await signedRequest({ type: 'charge.refunded', data: { object: {} } }), env(), { fetchImpl, now: NOW });
+  assert.equal(other.status, 200);
+  const unpaid = await handleStripeWebhook(await signedRequest(paid(session({ payment_status: 'unpaid' }))), env(), { fetchImpl, now: NOW });
+  assert.equal(unpaid.status, 200);
+  assert.equal(sent.length, 0);
+});
+
+test('webhook: a sale with no studio name goes to the owner instead', async () => {
+  const { sent, fetchImpl } = mailer();
+  const s = session({ custom_fields: [] });
+  const res = await handleStripeWebhook(await signedRequest(paid(s)), env({ OWNER_EMAIL: 'me@example.com' }), { fetchImpl, now: NOW });
+  assert.equal(res.status, 200);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].body.to, ['me@example.com']);
+  assert.match(sent[0].body.text, /make-unlock-code/);
+});
+
+test('webhook: mail failure asks Stripe to retry and is not marked sent', async () => {
+  const { fetchImpl } = mailer(500);
+  const store = kv();
+  const res = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_SENT: store }), { fetchImpl, now: NOW });
+  assert.equal(res.status, 502);
+  assert.equal(store.m.size, 0);
+});
+
+test('webhook: year falls back to last year for January and February sales', () => {
+  const noYear = (iso) => recapYear({ custom_fields: [], created: Date.parse(iso) / 1000 });
+  assert.equal(noYear('2027-01-15T00:00:00Z'), 2026);
+  assert.equal(noYear('2027-02-28T00:00:00Z'), 2026);
+  assert.equal(noYear('2026-12-01T00:00:00Z'), 2026);
+  assert.equal(recapYear(session()), 2026);
+});
+
+test('client errors: logged without extra fields, oversize refused', async () => {
+  const logged = [];
+  const orig = console.error;
+  console.error = (...a) => logged.push(a.join(' '));
+  try {
+    const ok = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: JSON.stringify({ page: '/r.html', message: 'boom\nline', line: 3, hash: '#secret' }) }));
+    assert.equal(ok.status, 204);
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /boom line/);
+    assert.doesNotMatch(logged[0], /secret/);
+    const big = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: 'x'.repeat(5000) }));
+    assert.equal(big.status, 413);
+    const junk = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: 'not json' }));
+    assert.equal(junk.status, 400);
+  } finally {
+    console.error = orig;
+  }
+});

@@ -22,6 +22,8 @@ const sample = {
   k: 'r', f: 'Maya',
   m: { n: 142, mn: 7380, fc: ['Sunrise Vinyasa', 51], fi: ['Marisol', 38], st: 19, bm: [3, 18], dw: 5, et: 360, pc: 94 },
 };
+// The sample carries a real code for the made-up studio, so it shows unlocked once the site has keys.
+if (CONFIG.demoUnlockCode) sample.s.u = CONFIG.demoUnlockCode;
 const welcome = { s: sample.s, k: 'w', f: 'Leo' };
 
 const frame = document.getElementById('demoPhone');
