@@ -7,7 +7,8 @@ import { parseDate, parseTime, guessDayFirst, weekday, formatTime } from '../pub
 import { guessMapping, findHeaderRow, applyMapping } from '../public/js/lib/mapping.js';
 import { computeRecaps, planType } from '../public/js/lib/stats.js';
 import { encodePayload, decodePayload, memberPayload } from '../public/js/lib/codec.js';
-import { verifyUnlock, unlockMessage } from '../public/js/lib/unlock.js';
+import { verifyUnlock, unlockMessage, linkUnlocked } from '../public/js/lib/unlock.js';
+import { buildCards } from '../public/js/lib/cards.js';
 import { textOn, safeHex } from '../public/js/lib/color.js';
 
 test('csv: quotes, commas, newlines, BOM, semicolons', () => {
@@ -122,10 +123,33 @@ test('codec: round trip, small links, welcome-back has no stats', async () => {
   assert.equal(dec.m.n, 120);
   assert.equal(dec.s.p, 1);
   assert.ok(enc.length < 400, `link too long: ${enc.length}`);
-  const w = await decodePayload(await encodePayload(memberPayload({ ...member, kind: 'welcome' }, studio, { preview: false })));
+  const w = await decodePayload(await encodePayload(memberPayload({ ...member, kind: 'welcome' }, studio, { preview: false, unlockCode: 'abc def' })));
   assert.equal(w.k, 'w');
   assert.equal(w.m, undefined);
   assert.equal(w.s.p, undefined);
+  assert.equal(w.s.u, 'abcdef');
+  // Without signed links, an unlocked link carries neither the flag nor a code.
+  const noCode = await decodePayload(await encodePayload(memberPayload(member, studio, { preview: false })));
+  assert.equal(noCode.s.p, undefined);
+  assert.equal(noCode.s.u, undefined);
+});
+
+test('unlock: member links are checked against their own studio and year', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const pub = publicKey.export({ format: 'jwk' }).x;
+  const code = sign(null, Buffer.from(unlockMessage('Juniper Yoga', 2026)), privateKey).toString('base64url');
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, pub), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026 }, pub), false); // flag deleted, no code
+  assert.equal(await linkUnlocked({ n: 'Other Studio', y: 2026, u: code }, pub), false); // code copied to another studio
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2027, u: code }, pub), false);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code, p: 1 }, pub), false);
+  // Before the site has keys, the preview flag decides (the tool marks every link preview then).
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026 }, ''), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, p: 1 }, ''), false);
+  // A browser that can't check Ed25519 still needs something shaped like a real code.
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, pub, { supported: false }), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: 'x' }, pub, { supported: false }), false);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: '!!' }, pub, { supported: false }), false);
 });
 
 test('unlock: valid code verifies, wrong studio or year fails', async () => {
@@ -156,4 +180,18 @@ test('demo data: end to end', () => {
   assert.equal(summary.problems.badDate, 0);
   assert.ok(summary.problems.skippedStatus > 500, 'demo no-shows should be skipped');
   assert.ok(members.every((m) => m.firstName));
+});
+
+test('cards: three stat cards and a closing card that names the studio; link leaves out unused stats', async () => {
+  const member = { kind: 'recap', firstName: 'Ava', total: 120, minutes: 6000, favoriteClass: ['Flow', 40], favoriteInstructor: ['Ann', 30], streak: 12, busiestMonth: [3, 15], favoriteDay: [5, 30], earliest: 360, percentile: 91 };
+  const payload = memberPayload(member, { name: 'Test Studio', year: 2026 }, { preview: false });
+  assert.equal(payload.m.dw, undefined);
+  assert.equal(payload.m.et, undefined);
+  assert.equal(payload.m.pc, undefined);
+  const cards = buildCards(await decodePayload(await encodePayload(payload)));
+  assert.equal(cards.length, 4);
+  assert.deepEqual(cards.map((c) => c.id), ['total', 'class', 'streak', 'outro']);
+  assert.match(cards[3].eyebrow, /Test Studio/);
+  const sparse = buildCards({ s: { n: 'X', y: 2026 }, k: 'r', f: '', m: { n: 3, mn: 150 } });
+  assert.deepEqual(sparse.map((c) => c.id), ['total', 'outro']);
 });

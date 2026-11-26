@@ -43,7 +43,7 @@ export async function decodePayload(str) {
 }
 
 // Short keys keep links small.
-export function memberPayload(member, studio, { preview, short = false }) {
+export function memberPayload(member, studio, { preview, short = false, unlockCode = '' }) {
   const s = {
     n: studio.name, y: studio.year,
   };
@@ -57,6 +57,9 @@ export function memberPayload(member, studio, { preview, short = false }) {
     if (studio.offer) s.o = studio.offer;
   }
   if (preview) s.p = 1;
+  // With signed links on (CONFIG.signedLinks), an unlocked link carries the studio's code
+  // so the recap page can check it.
+  else if (unlockCode) s.u = String(unlockCode).replace(/\s+/g, '');
   const out = { s, k: member.kind === 'recap' ? 'r' : 'w', f: member.firstName || '' };
   if (member.kind === 'recap') {
     const m = { n: member.total, mn: member.minutes };
@@ -64,9 +67,7 @@ export function memberPayload(member, studio, { preview, short = false }) {
     if (member.favoriteInstructor && member.favoriteInstructor[1] >= 2) m.fi = member.favoriteInstructor;
     if (member.streak >= 2) m.st = member.streak;
     if (member.busiestMonth && member.busiestMonth[1] >= 2) m.bm = member.busiestMonth;
-    if (member.favoriteDay) m.dw = member.favoriteDay[0];
-    if (member.earliest != null) m.et = member.earliest;
-    if (member.percentile >= 50) m.pc = member.percentile;
+    // Only what the recap cards show goes in the link, to keep it short.
     out.m = m;
   }
   return out;
