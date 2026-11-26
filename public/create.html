@@ -73,7 +73,14 @@
 
         <div class="step" id="step5" aria-disabled="true">
           <h2><span class="num">5</span>Unlock and download</h2>
-          <p class="hint">Two of your members are ready to view and send, with no PREVIEW mark. The full link file and the studio image download after unlock. <span id="buyWrap"></span></p>
+          <p class="hint">Two of your members are ready to view and send, with no PREVIEW mark. The full link file and the studio image download after you pay. <span id="buyWrap"></span></p>
+          <p id="accountMsg" class="hint"></p>
+          <div class="row" id="buyRow" style="margin-top:0">
+            <input id="buyerEmail" type="email" autocomplete="email" placeholder="Email for the receipt and sign-in" style="flex:1">
+            <button type="button" id="buyList">Unlock the rest</button>
+          </div>
+          <p id="buyMsg"></p>
+          <p class="hint" id="signInRow"><button type="button" class="secondary" id="signInBtn">Email me a sign-in link</button></p>
           <label for="code">Unlock code</label>
           <div class="row" style="margin-top:0"><input id="code" placeholder="Paste the code you got after paying" style="flex:1"><button type="button" id="unlockBtn">Unlock</button></div>
           <p id="unlockMsg"></p>

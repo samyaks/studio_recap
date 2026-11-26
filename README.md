@@ -2,18 +2,18 @@
 
 A year-in-review for boutique fitness studios. The studio uploads one attendance spreadsheet; every member gets a personal recap page (classes taken plus two highlights, such as favorite class, streak, favorite instructor or biggest month) that ends with a one-tap Instagram story image. Members below a visit minimum get a warm welcome-back note with no numbers instead.
 
-It is a static site with three small Cloudflare Pages Functions (checkout, the Stripe webhook that emails unlock codes, and a script-error log). The spreadsheet is read in the studio owner's browser and never uploaded. Each member's stats are compressed into their own link after the `#`, which browsers never send to a server.
+It is a static site with a few small Cloudflare Pages Functions: checkout, email sign-in, the signed-in owner, the Stripe webhook that emails unlock codes, and a script-error log. The spreadsheet is read in the studio owner's browser and never uploaded. Each member's stats are compressed into their own link after the `#`, which browsers never send to a server.
 
 ## Pages
 
 - `public/index.html`: landing page with a live sample recap.
-- `public/create.html`: the owner tool. Upload CSV, check columns, brand it, review who gets what, unlock, download links and a studio image.
+- `public/create.html`: the owner tool. Upload CSV, check columns, brand it, review who gets what. Two members can be viewed before paying. Unlock the rest starts Stripe Checkout; after they pay and sign in, the full link file and studio image download. A pasted unlock code still works.
 - `public/r.html`: the member recap that each link opens.
 
 ## Run it locally
 
 ```
-npm test            # 43 tests, no installs needed (Node 20+)
+npm test            # 58 tests, no installs needed (Node 20+)
 npx serve public    # then open http://localhost:3000
 ```
 

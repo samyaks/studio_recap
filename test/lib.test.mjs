@@ -11,6 +11,7 @@ import { verifyUnlock, unlockMessage, linkUnlocked } from '../public/js/lib/unlo
 import { buildCards } from '../public/js/lib/cards.js';
 import { textOn, safeHex } from '../public/js/lib/color.js';
 import { pickSampleMembers } from '../public/js/lib/samples.js';
+import { purchaseCovers } from '../public/js/lib/purchase.js';
 
 test('csv: quotes, commas, newlines, BOM, semicolons', () => {
   const rows = parseCSV('﻿a,b,c\r\n"x, y","he said ""hi""","line\nbreak"\n\n');
@@ -218,6 +219,16 @@ test('samples: a single member', () => {
 
 test('samples: empty input', () => {
   assert.deepEqual(pickSampleMembers([]), []);
+});
+
+test('purchase covers a paid studio and year, and nothing else', () => {
+  const rows = [{ studio_key: 'juniperyogapilates', year: 2026, status: 'paid', studio_name: 'Juniper Yoga + Pilates' }];
+  assert.equal(purchaseCovers(rows, 'Juniper Yoga + Pilates', 2026), true);
+  assert.equal(purchaseCovers(rows, 'juniper yoga pilates', '2026'), true);
+  assert.equal(purchaseCovers(rows, 'Juniper Yoga + Pilates', 2025), false);
+  assert.equal(purchaseCovers([{ ...rows[0], status: 'refunded' }], 'Juniper Yoga + Pilates', 2026), false);
+  assert.equal(purchaseCovers([], 'Juniper Yoga + Pilates', 2026), false);
+  assert.equal(purchaseCovers(rows, '', 2026), false);
 });
 
 test('cards: three stat cards and a closing card that names the studio; link leaves out unused stats', async () => {
