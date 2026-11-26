@@ -6,10 +6,11 @@ import { computeRecaps } from './lib/stats.js';
 import { encodePayload, memberPayload } from './lib/codec.js';
 import { verifyUnlock, ed25519Supported, normalizeStudioName, cleanCode } from './lib/unlock.js';
 import { safeUrl } from './lib/cards.js';
+import { pickSampleMembers } from './lib/samples.js';
 import { makeStudioImage } from './share.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, unlockCode: '', selected: null, fileName: '' };
+const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, unlockCode: '', selected: null, shown: null, fileName: '' };
 
 document.querySelectorAll('[data-product-name]').forEach((e) => { e.textContent = CONFIG.productName; });
 if (safeUrl(CONFIG.paymentLink)) {
@@ -33,6 +34,9 @@ function loadText(text, name) {
   state.mapping = guessMapping(state.header);
   state.fileName = name;
   state.selected = null;
+  state.shown = null;
+  shownSrc = '';
+  shownStamp = '';
   yearsFilled = '';
   $('sYear').textContent = '';
   setMsg('fileMsg', `${name}: ${state.rows.length.toLocaleString('en-US')} rows read.`, 'ok');
@@ -170,10 +174,13 @@ function doCompute() {
   setMsg('mapMsg', `Looks good: ${summary.totalClasses.toLocaleString('en-US')} visits from ${summary.members} members in ${summary.year}.`
     + (noEmail ? ' There is no email column, so the download will list members by ID and name for you to match up in your email tool.' : ''), noEmail ? 'warn' : 'ok');
   ['step3', 'step4', 'step5'].forEach((s) => enable(s, true));
+  const samples = pickSampleMembers(result.members);
+  const selected = result.members.find((x) => x.key === state.selected);
+  const keep = selected && (state.unlocked || samples.some((s) => s.key === selected.key));
+  if (!keep) state.selected = samples[0] ? samples[0].key : null;
   renderSplit();
   renderMembers();
   checkUnlock();
-  if (!state.selected || !result.members.find((x) => x.key === state.selected)) state.selected = result.members[0] && result.members[0].key;
   refreshPreview();
 }
 
@@ -250,16 +257,51 @@ function linkBase() {
   return new URL('r.html', location.href).href.split('#')[0];
 }
 
+function linkOptions() {
+  // Sample links stay clean while locked. An unlocked studio is clean too.
+  return { preview: false, short: $('sShort').checked, unlockCode: CONFIG.signedLinks ? state.unlockCode : '' };
+}
+
+function lockedLine(member) {
+  const who = member ? (`${member.firstName} ${member.lastName}`.trim() || member.email) : '';
+  return who ? `${who}'s recap is part of the full list.` : 'This recap is part of the full list.';
+}
+
 let previewTimer = null;
+let previewSeq = 0;
+let shownSrc = '';
+let shownStamp = '';
+function studioStamp() {
+  const s = studio();
+  return JSON.stringify([s.name, s.handle, s.color, s.accent, s.bookingUrl, s.note, s.offer, s.year, $('sShort').checked, state.unlockCode]);
+}
 function refreshPreview() {
   clearTimeout(previewTimer);
+  const seq = ++previewSeq;
   previewTimer = setTimeout(async () => {
-    if (!state.result) return;
-    const m = state.result.members.find((x) => x.key === state.selected);
+    if (seq !== previewSeq || !state.result) return;
+    const samples = pickSampleMembers(state.result.members);
+    const isSample = (key) => samples.some((s) => s.key === key);
+    const selected = state.result.members.find((x) => x.key === state.selected);
+    const open = !!selected && (state.unlocked || isSample(selected.key));
+    let m = open ? selected : state.result.members.find((x) => x.key === state.shown && isSample(x.key));
+    if (!m) m = samples[0];
     if (!m) return;
-    const payload = memberPayload(m, studio(), { preview: !state.unlocked, short: $('sShort').checked, unlockCode: CONFIG.signedLinks ? state.unlockCode : '' });
-    $('preview').src = linkBase() + '#' + (await encodePayload(payload));
-    $('previewName').textContent = `${m.firstName || m.email}: ${m.kind === 'recap' ? 'recap' : 'welcome-back note'}`;
+    // A locked row that isn't a sample only changes the caption. Rebuilding the
+    // link would reload the phone even when the sample on screen is unchanged.
+    const stamp = studioStamp();
+    if (!open && state.shown === m.key && shownStamp === stamp) {
+      $('previewName').textContent = lockedLine(selected);
+      return;
+    }
+    const src = linkBase() + '#' + await encodePayload(memberPayload(m, studio(), linkOptions()));
+    if (seq !== previewSeq) return;
+    state.shown = m.key;
+    shownStamp = stamp;
+    if (shownSrc !== src) { shownSrc = src; $('preview').src = src; }
+    $('previewName').textContent = open
+      ? `${m.firstName || m.email}: ${m.kind === 'recap' ? 'recap' : 'welcome-back note'}`
+      : lockedLine(selected);
   }, 150);
 }
 
@@ -271,7 +313,7 @@ async function checkUnlock() {
   const s = studio();
   let ok = false, msg = '', cls = '';
   if (!CONFIG.unlockPublicKey) {
-    msg = 'Unlocking isn\'t set up on this site yet, so everything is a preview.'; cls = 'hint';
+    msg = 'Unlocking isn\'t set up on this site yet, so only two sample members are ready to view and send.'; cls = 'hint';
   } else if (!code) {
     msg = '';
   } else if (!normalizeStudioName(s.name)) {
@@ -308,20 +350,26 @@ $('dlLinks').addEventListener('click', async () => {
   const short = $('sShort').checked;
   const base = linkBase();
   const rows = [['email', 'first_name', 'last_name', 'member_id', 'message', 'classes', 'link']];
-  for (const m of state.result.members) {
-    const link = base + '#' + (await encodePayload(memberPayload(m, s, { preview: !state.unlocked, short, unlockCode: CONFIG.signedLinks ? state.unlockCode : '' })));
+  const list = state.unlocked ? state.result.members : pickSampleMembers(state.result.members);
+  for (const m of list) {
+    const link = base + '#' + (await encodePayload(memberPayload(m, s, linkOptions())));
     const id = m.key.startsWith('id:') ? m.key.slice(3) : '';
     rows.push([m.email, m.firstName, m.lastName, id, m.kind === 'recap' ? 'recap' : 'welcome_back', m.kind === 'recap' ? m.total : '', link]);
   }
-  const noEmail = state.result.members.filter((m) => !m.email).length;
+  const noEmail = list.filter((m) => !m.email).length;
   // The BOM makes Excel read accented names correctly.
-  download(new Blob(['\ufeff' + toCSV(rows)], { type: 'text/csv;charset=utf-8' }), `${slug(s.name)}-${s.year}-recap-links${state.unlocked ? '' : '-PREVIEW'}.csv`);
-  setMsg('unlockMsg', `${rows.length - 1} links downloaded${noEmail ? `; ${noEmail} have no email in your export, so match them by member ID or name` : ''}.${state.unlocked ? '' : ' These are preview links.'}`, state.unlocked ? 'ok' : 'warn');
+  download(new Blob(['\ufeff' + toCSV(rows)], { type: 'text/csv;charset=utf-8' }), `${slug(s.name)}-${s.year}-recap-links${state.unlocked ? '' : '-sample'}.csv`);
+  const extra = state.unlocked ? '' : ' These are the sample links. The rest download after unlock.';
+  setMsg('unlockMsg', `${rows.length - 1} links downloaded${noEmail ? `; ${noEmail} have no email in your export, so match them by member ID or name` : ''}.${extra}`, state.unlocked ? 'ok' : 'warn');
 });
 
 $('dlStudio').addEventListener('click', async () => {
   if (!state.result) return;
   await checkUnlock();
+  if (!state.unlocked) {
+    setMsg('unlockMsg', 'The studio image is part of the full list.', 'warn');
+    return;
+  }
   const s = studio();
   const blob = await makeStudioImage(state.result.summary, s, { preview: !state.unlocked });
   if (blob) download(blob, `${slug(s.name)}-${s.year}-studio.png`);
