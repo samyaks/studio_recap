@@ -1,4 +1,4 @@
-import { MONTH_NAMES, DAY_NAMES, formatTime } from './dates.js';
+import { MONTH_NAMES } from './dates.js';
 
 // Booking links must be https. A bare "www.studio.com/book" gets https:// added.
 export function safeUrl(u) {
@@ -38,21 +38,14 @@ export function buildCards(p) {
   }
 
   const m = p.m || {};
-  cards.push({ id: 'intro', eyebrow: studio, big: String(year), line: `${hi}, here's your year with us.`, sub: 'Tap to keep going' });
-  cards.push({ id: 'total', eyebrow: 'You showed up for', big: Number(m.n || 0).toLocaleString('en-US'), line: Number(m.n) === 1 ? 'class' : 'classes', sub: hoursLine(Number(m.mn || 0)) });
-  if (m.fc) cards.push({ id: 'class', eyebrow: 'Your go-to class', big: m.fc[0], sub: `${m.fc[1]} times this year` });
-  if (m.fi) cards.push({ id: 'instructor', eyebrow: 'You and your favorite instructor', big: m.fi[0], sub: `${m.fi[1]} classes together` });
-  if (m.st) cards.push({ id: 'streak', eyebrow: 'Longest streak', big: String(m.st), line: 'weeks in a row', sub: 'Consistency looks good on you.' });
-  if (m.bm) cards.push({ id: 'month', eyebrow: 'Your biggest month', big: MONTH_NAMES[m.bm[0] - 1], sub: `${m.bm[1]} classes` });
-  if (m.et != null && m.et <= 7 * 60 + 30) {
-    cards.push({ id: 'early', eyebrow: 'Early bird', big: formatTime(m.et), sub: 'Your earliest class of the year.' });
-  } else if (m.dw != null) {
-    cards.push({ id: 'day', eyebrow: 'Your favorite day to come in', big: DAY_NAMES[m.dw] + 's' });
-  }
-  if (m.pc >= 50) {
-    const top = Math.max(1, 100 - m.pc);
-    cards.push({ id: 'top', eyebrow: 'Out of everyone at ' + studio, big: `Top ${top}%`, sub: 'by classes taken this year.' });
-  }
+  // Three stat cards, then the closing card with the booking link.
+  cards.push({ id: 'total', eyebrow: `${hi}, in ${year} you showed up for`, big: Number(m.n || 0).toLocaleString('en-US'), line: Number(m.n) === 1 ? 'class' : 'classes', sub: hoursLine(Number(m.mn || 0)) });
+  const picks = [];
+  if (m.fc) picks.push({ id: 'class', eyebrow: 'Your go-to class', big: m.fc[0], sub: `${m.fc[1]} times this year` });
+  if (m.st) picks.push({ id: 'streak', eyebrow: 'Longest streak', big: String(m.st), line: 'weeks in a row', sub: 'Consistency looks good on you.' });
+  if (m.fi) picks.push({ id: 'instructor', eyebrow: 'You and your favorite instructor', big: m.fi[0], sub: `${m.fi[1]} classes together` });
+  if (m.bm) picks.push({ id: 'month', eyebrow: 'Your biggest month', big: MONTH_NAMES[m.bm[0] - 1], sub: `${m.bm[1]} classes` });
+  cards.push(...picks.slice(0, 2));
   cards.push({
     id: 'outro', eyebrow: 'Thank you', big: `See you in ${year + 1}`,
     line: s.t || `Thanks for a great year, ${first || 'friend'}.`,
