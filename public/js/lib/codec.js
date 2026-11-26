@@ -43,7 +43,7 @@ export async function decodePayload(str) {
 }
 
 // Short keys keep links small.
-export function memberPayload(member, studio, { preview, short = false }) {
+export function memberPayload(member, studio, { preview, short = false, unlockCode = '' }) {
   const s = {
     n: studio.name, y: studio.year,
   };
@@ -56,7 +56,9 @@ export function memberPayload(member, studio, { preview, short = false }) {
     if (studio.note) s.t = studio.note;
     if (studio.offer) s.o = studio.offer;
   }
-  if (preview) s.p = 1;
+  // An unlocked link carries the studio's code so the recap page can check it.
+  if (preview || !unlockCode) s.p = 1;
+  else s.u = String(unlockCode).replace(/\s+/g, '');
   const out = { s, k: member.kind === 'recap' ? 'r' : 'w', f: member.firstName || '' };
   if (member.kind === 'recap') {
     const m = { n: member.total, mn: member.minutes };

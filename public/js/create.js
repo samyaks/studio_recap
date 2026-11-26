@@ -4,12 +4,12 @@ import { FIELDS, guessMapping, findHeaderRow, applyMapping } from './lib/mapping
 import { guessDayFirst } from './lib/dates.js';
 import { computeRecaps } from './lib/stats.js';
 import { encodePayload, memberPayload } from './lib/codec.js';
-import { verifyUnlock, ed25519Supported, normalizeStudioName } from './lib/unlock.js';
+import { verifyUnlock, ed25519Supported, normalizeStudioName, cleanCode } from './lib/unlock.js';
 import { safeUrl } from './lib/cards.js';
 import { makeStudioImage } from './share.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, selected: null, fileName: '' };
+const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, unlockCode: '', selected: null, fileName: '' };
 
 document.querySelectorAll('[data-product-name]').forEach((e) => { e.textContent = CONFIG.productName; });
 if (safeUrl(CONFIG.paymentLink)) {
@@ -257,7 +257,7 @@ function refreshPreview() {
     if (!state.result) return;
     const m = state.result.members.find((x) => x.key === state.selected);
     if (!m) return;
-    const payload = memberPayload(m, studio(), { preview: !state.unlocked, short: $('sShort').checked });
+    const payload = memberPayload(m, studio(), { preview: !state.unlocked, short: $('sShort').checked, unlockCode: state.unlockCode });
     $('preview').src = linkBase() + '#' + (await encodePayload(payload));
     $('previewName').textContent = `${m.firstName || m.email}: ${m.kind === 'recap' ? 'recap' : 'welcome-back note'}`;
   }, 150);
@@ -284,7 +284,8 @@ async function checkUnlock() {
     cls = ok ? 'ok' : 'err';
   }
   if (seq !== unlockSeq) return; // a newer check started while this one ran
-  if (ok !== state.unlocked) { state.unlocked = ok; refreshPreview(); }
+  const newCode = ok ? cleanCode(code) : '';
+  if (ok !== state.unlocked || newCode !== state.unlockCode) { state.unlocked = ok; state.unlockCode = newCode; refreshPreview(); }
   setMsg('unlockMsg', msg, cls);
 }
 $('unlockBtn').addEventListener('click', checkUnlock);
@@ -308,7 +309,7 @@ $('dlLinks').addEventListener('click', async () => {
   const base = linkBase();
   const rows = [['email', 'first_name', 'last_name', 'member_id', 'message', 'classes', 'link']];
   for (const m of state.result.members) {
-    const link = base + '#' + (await encodePayload(memberPayload(m, s, { preview: !state.unlocked, short })));
+    const link = base + '#' + (await encodePayload(memberPayload(m, s, { preview: !state.unlocked, short, unlockCode: state.unlockCode })));
     const id = m.key.startsWith('id:') ? m.key.slice(3) : '';
     rows.push([m.email, m.firstName, m.lastName, id, m.kind === 'recap' ? 'recap' : 'welcome_back', m.kind === 'recap' ? m.total : '', link]);
   }

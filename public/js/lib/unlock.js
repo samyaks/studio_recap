@@ -1,5 +1,7 @@
-// Unlock codes are Ed25519 signatures over the studio name and year,
-// made offline with scripts/make-unlock-code.mjs. The page only holds the public key.
+// Unlock codes are Ed25519 signatures over the studio name and year, made with
+// scripts/make-unlock-code.mjs or by the Stripe webhook (functions/api/stripe-webhook.js).
+// Pages only hold the public key. Unlocked member links carry the code, and the recap page
+// checks it, so deleting the preview flag from a link doesn't remove the PREVIEW mark.
 
 // Letters and digits in any script; case, spaces and punctuation don't matter.
 export function normalizeStudioName(studioName) {
@@ -32,10 +34,24 @@ export async function verifyUnlock(code, studioName, year, publicKeyB64) {
   if (!code || !publicKeyB64 || !normalizeStudioName(studioName)) return false;
   try {
     const key = await crypto.subtle.importKey('raw', fromB64Url(publicKeyB64), { name: 'Ed25519' }, false, ['verify']);
-    const sig = fromB64Url(code.replace(/\s+/g, ''));
+    const sig = fromB64Url(cleanCode(code));
     if (sig.length !== 64) return false;
     return await crypto.subtle.verify({ name: 'Ed25519' }, key, sig, new TextEncoder().encode(unlockMessage(studioName, year)));
   } catch {
     return false;
   }
+}
+
+export function cleanCode(code) {
+  return String(code || '').replace(/\s+/g, '');
+}
+
+// Whether a member link's studio block (`s`) is unlocked: it must carry a code that matches
+// its own studio name and year. A browser that can't check Ed25519 gets the benefit of the doubt
+// for a link that carries a code, so members on older phones don't see PREVIEW on a paid recap;
+// the owner's tool already refused to make unlocked links without a valid code.
+export async function linkUnlocked(s, publicKeyB64) {
+  if (!s || !s.u || s.p || !publicKeyB64) return false;
+  if (!(await ed25519Supported())) return true;
+  return verifyUnlock(s.u, s.n, s.y, publicKeyB64);
 }

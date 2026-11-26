@@ -7,7 +7,7 @@ import { parseDate, parseTime, guessDayFirst, weekday, formatTime } from '../pub
 import { guessMapping, findHeaderRow, applyMapping } from '../public/js/lib/mapping.js';
 import { computeRecaps, planType } from '../public/js/lib/stats.js';
 import { encodePayload, decodePayload, memberPayload } from '../public/js/lib/codec.js';
-import { verifyUnlock, unlockMessage } from '../public/js/lib/unlock.js';
+import { verifyUnlock, unlockMessage, linkUnlocked } from '../public/js/lib/unlock.js';
 import { textOn, safeHex } from '../public/js/lib/color.js';
 
 test('csv: quotes, commas, newlines, BOM, semicolons', () => {
@@ -122,10 +122,27 @@ test('codec: round trip, small links, welcome-back has no stats', async () => {
   assert.equal(dec.m.n, 120);
   assert.equal(dec.s.p, 1);
   assert.ok(enc.length < 400, `link too long: ${enc.length}`);
-  const w = await decodePayload(await encodePayload(memberPayload({ ...member, kind: 'welcome' }, studio, { preview: false })));
+  const w = await decodePayload(await encodePayload(memberPayload({ ...member, kind: 'welcome' }, studio, { preview: false, unlockCode: 'abc def' })));
   assert.equal(w.k, 'w');
   assert.equal(w.m, undefined);
   assert.equal(w.s.p, undefined);
+  assert.equal(w.s.u, 'abcdef');
+  // No code means a preview link, even when preview isn't asked for.
+  const noCode = await decodePayload(await encodePayload(memberPayload(member, studio, { preview: false })));
+  assert.equal(noCode.s.p, 1);
+  assert.equal(noCode.s.u, undefined);
+});
+
+test('unlock: member links are checked against their own studio and year', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const pub = publicKey.export({ format: 'jwk' }).x;
+  const code = sign(null, Buffer.from(unlockMessage('Juniper Yoga', 2026)), privateKey).toString('base64url');
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, pub), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026 }, pub), false); // flag deleted, no code
+  assert.equal(await linkUnlocked({ n: 'Other Studio', y: 2026, u: code }, pub), false); // code copied to another studio
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2027, u: code }, pub), false);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code, p: 1 }, pub), false);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, ''), false); // site not set up
 });
 
 test('unlock: valid code verifies, wrong studio or year fails', async () => {
