@@ -257,7 +257,7 @@ function refreshPreview() {
     if (!state.result) return;
     const m = state.result.members.find((x) => x.key === state.selected);
     if (!m) return;
-    const payload = memberPayload(m, studio(), { preview: !state.unlocked, short: $('sShort').checked, unlockCode: state.unlockCode });
+    const payload = memberPayload(m, studio(), { preview: !state.unlocked, short: $('sShort').checked, unlockCode: CONFIG.signedLinks ? state.unlockCode : '' });
     $('preview').src = linkBase() + '#' + (await encodePayload(payload));
     $('previewName').textContent = `${m.firstName || m.email}: ${m.kind === 'recap' ? 'recap' : 'welcome-back note'}`;
   }, 150);
@@ -280,7 +280,7 @@ async function checkUnlock() {
     msg = 'This browser is too old to check unlock codes. Update it, or use a current Chrome, Safari, Edge or Firefox.'; cls = 'err';
   } else {
     ok = await verifyUnlock(code, s.name, s.year, CONFIG.unlockPublicKey);
-    msg = ok ? `Unlocked for ${s.name}, ${s.year}.` : 'That code doesn\'t match this studio name and year. Type the name exactly as you gave it when you paid.';
+    msg = ok ? `Unlocked for ${s.name}, ${s.year}.` : 'That code doesn\'t match this studio name and year. Check both match your code email: the name as you typed it when you paid, and the year you picked.';
     cls = ok ? 'ok' : 'err';
   }
   if (seq !== unlockSeq) return; // a newer check started while this one ran
@@ -309,7 +309,7 @@ $('dlLinks').addEventListener('click', async () => {
   const base = linkBase();
   const rows = [['email', 'first_name', 'last_name', 'member_id', 'message', 'classes', 'link']];
   for (const m of state.result.members) {
-    const link = base + '#' + (await encodePayload(memberPayload(m, s, { preview: !state.unlocked, short, unlockCode: state.unlockCode })));
+    const link = base + '#' + (await encodePayload(memberPayload(m, s, { preview: !state.unlocked, short, unlockCode: CONFIG.signedLinks ? state.unlockCode : '' })));
     const id = m.key.startsWith('id:') ? m.key.slice(3) : '';
     rows.push([m.email, m.firstName, m.lastName, id, m.kind === 'recap' ? 'recap' : 'welcome_back', m.kind === 'recap' ? m.total : '', link]);
   }

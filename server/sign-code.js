@@ -2,7 +2,8 @@
 import { unlockMessage } from '../public/js/lib/unlock.js';
 
 function pemToDer(pem) {
-  const b64 = String(pem).replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  // Secrets pasted as one line sometimes hold literal "\n" instead of line breaks.
+  const b64 = String(pem).replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
   const bin = atob(b64);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }

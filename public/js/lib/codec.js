@@ -56,9 +56,10 @@ export function memberPayload(member, studio, { preview, short = false, unlockCo
     if (studio.note) s.t = studio.note;
     if (studio.offer) s.o = studio.offer;
   }
-  // An unlocked link carries the studio's code so the recap page can check it.
-  if (preview || !unlockCode) s.p = 1;
-  else s.u = String(unlockCode).replace(/\s+/g, '');
+  if (preview) s.p = 1;
+  // With signed links on (CONFIG.signedLinks), an unlocked link carries the studio's code
+  // so the recap page can check it.
+  else if (unlockCode) s.u = String(unlockCode).replace(/\s+/g, '');
   const out = { s, k: member.kind === 'recap' ? 'r' : 'w', f: member.firstName || '' };
   if (member.kind === 'recap') {
     const m = { n: member.total, mn: member.minutes };

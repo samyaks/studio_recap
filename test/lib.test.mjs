@@ -127,9 +127,9 @@ test('codec: round trip, small links, welcome-back has no stats', async () => {
   assert.equal(w.m, undefined);
   assert.equal(w.s.p, undefined);
   assert.equal(w.s.u, 'abcdef');
-  // No code means a preview link, even when preview isn't asked for.
+  // Without signed links, an unlocked link carries neither the flag nor a code.
   const noCode = await decodePayload(await encodePayload(memberPayload(member, studio, { preview: false })));
-  assert.equal(noCode.s.p, 1);
+  assert.equal(noCode.s.p, undefined);
   assert.equal(noCode.s.u, undefined);
 });
 
@@ -145,6 +145,10 @@ test('unlock: member links are checked against their own studio and year', async
   // Before the site has keys, the preview flag decides (the tool marks every link preview then).
   assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026 }, ''), true);
   assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, p: 1 }, ''), false);
+  // A browser that can't check Ed25519 still needs something shaped like a real code.
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: code }, pub, { supported: false }), true);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: 'x' }, pub, { supported: false }), false);
+  assert.equal(await linkUnlocked({ n: 'Juniper Yoga', y: 2026, u: '!!' }, pub, { supported: false }), false);
 });
 
 test('unlock: valid code verifies, wrong studio or year fails', async () => {

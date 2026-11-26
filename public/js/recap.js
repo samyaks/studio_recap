@@ -196,9 +196,10 @@ async function load() {
     showError('This link looks incomplete. Try opening it straight from the email your studio sent, or copy the whole link.');
     return;
   }
-  // The PREVIEW mark (here and on the share image) comes from checking the link's code,
-  // not from a flag anyone could delete.
-  payload.s.p = (await linkUnlocked(payload.s, CONFIG.unlockPublicKey)) ? 0 : 1;
+  // With signed links on, the PREVIEW mark (here and on the share image) comes from checking
+  // the link's code, not from a flag anyone could delete.
+  const unlocked = CONFIG.signedLinks ? await linkUnlocked(payload.s, CONFIG.unlockPublicKey) : !payload.s.p;
+  payload.s.p = unlocked ? 0 : 1;
   applyTheme(payload.s);
   const studioName = payload.s.n || 'your studio';
   document.title = payload.k === 'w'

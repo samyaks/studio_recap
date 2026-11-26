@@ -104,9 +104,55 @@ test('webhook: a sale with no studio name goes to the owner instead', async () =
   const s = session({ custom_fields: [] });
   const res = await handleStripeWebhook(await signedRequest(paid(s)), env({ OWNER_EMAIL: 'me@example.com' }), { fetchImpl, now: NOW });
   assert.equal(res.status, 200);
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 2);
   assert.deepEqual(sent[0].body.to, ['me@example.com']);
   assert.match(sent[0].body.text, /make-unlock-code/);
+  assert.deepEqual(sent[1].body.to, ['owner@studio.example']);
+  assert.match(sent[1].body.text, /by hand/);
+  assert.doesNotMatch(sent[1].body.text, /[A-Za-z0-9_-]{86}/);
+});
+
+test('webhook: free checkouts and delayed payments get codes too', async () => {
+  for (const ev of [paid(session({ payment_status: 'no_payment_required' })), { type: 'checkout.session.async_payment_succeeded', data: { object: session() } }]) {
+    const { sent, fetchImpl } = mailer();
+    const res = await handleStripeWebhook(await signedRequest(ev), env(), { fetchImpl, now: NOW });
+    assert.equal(res.status, 200);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].body.subject, /unlock code/);
+  }
+});
+
+test('webhook: only the configured payment link gets codes', async () => {
+  const { sent, fetchImpl } = mailer();
+  const other = await handleStripeWebhook(await signedRequest(paid(session({ payment_link: 'plink_other' }))), env({ PAYMENT_LINK_ID: 'plink_recap' }), { fetchImpl, now: NOW });
+  assert.equal(other.status, 200);
+  assert.equal(sent.length, 0);
+  await handleStripeWebhook(await signedRequest(paid(session({ payment_link: 'plink_recap' }))), env({ PAYMENT_LINK_ID: 'plink_recap' }), { fetchImpl, now: NOW });
+  assert.equal(sent.length, 1);
+});
+
+test('webhook: a missing or broken key tells the owner and asks Stripe to retry', async () => {
+  for (const key of ['', 'not a key']) {
+    const { sent, fetchImpl } = mailer();
+    const res = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_PRIVATE_KEY: key, OWNER_EMAIL: 'me@example.com' }), { fetchImpl, now: NOW });
+    assert.equal(res.status, 500);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].body.to, ['me@example.com']);
+  }
+});
+
+test('webhook: a key pasted with literal \\n still works', async () => {
+  const oneLine = PEM.trim().replace(/\n/g, '\\n');
+  assert.equal(await makeUnlockCode(oneLine, 'Any Studio', 2026), await makeUnlockCode(PEM, 'Any Studio', 2026));
+});
+
+test('webhook: overlong names go to the owner, control characters are dropped', async () => {
+  const long = mailer();
+  await handleStripeWebhook(await signedRequest(paid(session({ custom_fields: [{ key: 'studioname', type: 'text', text: { value: 'x'.repeat(130) } }] }))), env({ OWNER_EMAIL: 'me@example.com' }), { fetchImpl: long.fetchImpl, now: NOW });
+  assert.match(long.sent[0].body.text, /over 120/);
+  const ctrl = mailer();
+  await handleStripeWebhook(await signedRequest(paid(session({ custom_fields: [{ key: 'studioname', type: 'text', text: { value: 'Core\r\nStudio' } }, { key: 'recapyear', type: 'dropdown', dropdown: { value: '2026' } }] }))), env(), { fetchImpl: ctrl.fetchImpl, now: NOW });
+  assert.match(ctrl.sent[0].body.text, /for Core Studio \(2026\)/);
 });
 
 test('webhook: mail failure asks Stripe to retry and is not marked sent', async () => {
@@ -117,12 +163,14 @@ test('webhook: mail failure asks Stripe to retry and is not marked sent', async 
   assert.equal(store.m.size, 0);
 });
 
-test('webhook: year falls back to last year for January and February sales', () => {
+test('webhook: year comes from the dropdown, its label, or the sale date', () => {
   const noYear = (iso) => recapYear({ custom_fields: [], created: Date.parse(iso) / 1000 });
-  assert.equal(noYear('2027-01-15T00:00:00Z'), 2026);
-  assert.equal(noYear('2027-02-28T00:00:00Z'), 2026);
-  assert.equal(noYear('2026-12-01T00:00:00Z'), 2026);
-  assert.equal(recapYear(session()), 2026);
+  assert.deepEqual(noYear('2027-01-15T00:00:00Z'), { year: 2026, guessed: true });
+  assert.equal(noYear('2027-02-28T00:00:00Z').year, 2026);
+  assert.equal(noYear('2026-12-01T00:00:00Z').year, 2026);
+  assert.deepEqual(recapYear(session()), { year: 2026, guessed: false });
+  const byLabel = { custom_fields: [{ key: 'recapyear', type: 'dropdown', dropdown: { value: 'thisyear', options: [{ value: 'thisyear', label: 'Recap for 2026' }] } }] };
+  assert.deepEqual(recapYear(byLabel), { year: 2026, guessed: false });
 });
 
 test('client errors: logged without extra fields, oversize refused', async () => {
@@ -135,6 +183,10 @@ test('client errors: logged without extra fields, oversize refused', async () =>
     assert.equal(logged.length, 1);
     assert.match(logged[0], /boom line/);
     assert.doesNotMatch(logged[0], /secret/);
+    const store = kv();
+    await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: JSON.stringify({ page: '/', message: 'kept' }) }), { CLIENT_ERRORS: store });
+    assert.equal(store.m.size, 1);
+    assert.match([...store.m.values()][0], /kept/);
     const big = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: 'x'.repeat(5000) }));
     assert.equal(big.status, 413);
     const junk = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: 'not json' }));
