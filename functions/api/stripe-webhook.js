@@ -36,7 +36,7 @@ function field(session, key) {
 
 // Control characters out, runs of spaces collapsed: the name goes into an email.
 function cleanName(v) {
-  return String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(v || '').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function yearIn(v) {
@@ -63,6 +63,12 @@ function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+// Best effort: the email has already gone, so a KV failure must not make Stripe retry and resend it.
+async function markSent(env, key) {
+  if (!env.UNLOCK_SENT) return;
+  try { await env.UNLOCK_SENT.put(key, '1', { expirationTtl: 60 * 60 * 24 * 90 }); } catch (e) { console.error('could not record sent', key, e.message); }
+}
+
 async function tellOwner(env, subject, text, fetchImpl) {
   if (!env.OWNER_EMAIL) return;
   try { await sendMail(env, { to: env.OWNER_EMAIL, subject, text }, fetchImpl); } catch (e) { console.error('owner note failed', e.message); }
@@ -78,7 +84,11 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
   if (!HANDLED.has(event.type)) return json({ ignored: event.type });
   const session = (event.data && event.data.object) || {};
   if (!PAID.has(session.payment_status)) return json({ ignored: 'not paid yet' });
-  if (env.PAYMENT_LINK_ID && session.payment_link !== env.PAYMENT_LINK_ID) return json({ ignored: 'another product' });
+  if (env.PAYMENT_LINK_ID && session.payment_link !== env.PAYMENT_LINK_ID) {
+    // Logged so a test-mode id left in PAYMENT_LINK_ID after going live shows up in the logs.
+    console.log('checkout from another payment link', session.id, session.payment_link || 'none');
+    return json({ ignored: 'another product' });
+  }
 
   const product = env.PRODUCT_NAME || 'Studio Recap';
   const rawName = cleanName(field(session, 'studioname'));
@@ -87,6 +97,9 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
   const problem = !email ? 'no buyer email'
     : !normalizeStudioName(rawName) ? 'no studio name'
       : rawName.length > MAX_NAME ? `a studio name over ${MAX_NAME} characters` : '';
+  const doneKey = `sent:${session.id}`;
+  if (env.UNLOCK_SENT && (await env.UNLOCK_SENT.get(doneKey))) return json({ duplicate: true });
+
   if (problem) {
     console.error('sale needs a hand', session.id, problem);
     await tellOwner(env, `${product}: a sale needs a code by hand`,
@@ -94,15 +107,13 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
     if (email) {
       try {
         await sendMail(env, { to: email, subject: `Your ${product} unlock code is on its way`, replyTo: env.CONTACT_EMAIL,
-          text: `Thanks for buying ${product}. We couldn't read the studio name from your order, so we'll send your unlock code by hand shortly. If you like, reply with your studio name exactly as you'll type it in the tool.` }, fetchImpl);
+          text: `Thanks for buying ${product}. ${rawName.length > MAX_NAME ? 'The studio name on your order is too long for a code' : "We couldn't read the studio name from your order"}, so we'll send your unlock code by hand shortly. If you like, reply with your studio name exactly as you'll type it in the tool.` }, fetchImpl);
       } catch (e) { console.error('buyer note failed', e.message); }
     }
+    await markSent(env, doneKey);
     return json({ handled: false });
   }
   const name = rawName;
-
-  const doneKey = `sent:${session.id}`;
-  if (env.UNLOCK_SENT && (await env.UNLOCK_SENT.get(doneKey))) return json({ duplicate: true });
 
   let code;
   try {
@@ -133,7 +144,7 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
     console.error('code email failed', session.id, e.message);
     return json({ error: 'mail failed' }, 502); // Stripe retries
   }
-  if (env.UNLOCK_SENT) await env.UNLOCK_SENT.put(doneKey, '1', { expirationTtl: 60 * 60 * 24 * 90 });
+  await markSent(env, doneKey);
   await tellOwner(env, `${product} sale: ${name} (${year})`,
     `Code sent to ${email} for checkout ${session.id}.${guessed ? `\nThe order had no year, so ${year} was assumed. Check with the buyer.` : ''}`, fetchImpl);
   return json({ handled: true });

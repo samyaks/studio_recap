@@ -1,6 +1,6 @@
 // Pages send script errors here. Each report is written to the site's logs
 // (Cloudflare > Workers & Pages > this project > Functions > Real-time logs, which only show
-// while open) and, if a KV namespace is bound as CLIENT_ERRORS, kept there for 30 days.
+// while open) and, if a KV namespace is bound as CLIENT_ERRORS, a sample is kept there for 30 days.
 // Reports carry no member data: only the page path, the error text and where it happened.
 const MAX = 2048;
 const KEEP_SECONDS = 60 * 60 * 24 * 30;
@@ -45,7 +45,9 @@ export async function handleClientError(request, env = {}) {
     ua: clip(request.headers.get('user-agent'), 160),
   };
   console.error('client-error', JSON.stringify(entry));
-  if (env.CLIENT_ERRORS) {
+  // KV writes share a daily quota with the Stripe webhook's UNLOCK_SENT, so keep at most a
+  // tenth of reports there; every report still goes to the logs.
+  if (env.CLIENT_ERRORS && (env.KEEP_ALL_ERRORS || Math.random() < 0.1)) {
     const key = `err:${entry.at}:${Math.random().toString(36).slice(2, 8)}`;
     try { await env.CLIENT_ERRORS.put(key, JSON.stringify(entry), { expirationTtl: KEEP_SECONDS }); } catch (e) { console.error('kv failed', e.message); }
   }

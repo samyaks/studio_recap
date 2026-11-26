@@ -184,7 +184,7 @@ test('client errors: logged without extra fields, oversize refused', async () =>
     assert.match(logged[0], /boom line/);
     assert.doesNotMatch(logged[0], /secret/);
     const store = kv();
-    await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: JSON.stringify({ page: '/', message: 'kept' }) }), { CLIENT_ERRORS: store });
+    await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: JSON.stringify({ page: '/', message: 'kept' }) }), { CLIENT_ERRORS: store, KEEP_ALL_ERRORS: '1' });
     assert.equal(store.m.size, 1);
     assert.match([...store.m.values()][0], /kept/);
     const big = await handleClientError(new Request('https://x/api/client-error', { method: 'POST', body: 'x'.repeat(5000) }));
@@ -194,4 +194,18 @@ test('client errors: logged without extra fields, oversize refused', async () =>
   } finally {
     console.error = orig;
   }
+});
+
+test('webhook: a redelivered needs-a-hand event sends no second notes, and a KV failure after sending is not retried', async () => {
+  const { sent, fetchImpl } = mailer();
+  const store = kv();
+  const ev = paid(session({ custom_fields: [] }));
+  await handleStripeWebhook(await signedRequest(ev), env({ UNLOCK_SENT: store, OWNER_EMAIL: 'me@example.com' }), { fetchImpl, now: NOW });
+  const n = sent.length;
+  await handleStripeWebhook(await signedRequest(ev), env({ UNLOCK_SENT: store, OWNER_EMAIL: 'me@example.com' }), { fetchImpl, now: NOW });
+  assert.equal(sent.length, n);
+  const broken = { get: async () => null, put: async () => { throw new Error('quota'); } };
+  const m2 = mailer();
+  const res = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_SENT: broken }), { fetchImpl: m2.fetchImpl, now: NOW });
+  assert.equal(res.status, 200);
 });

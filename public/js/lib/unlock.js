@@ -1,7 +1,7 @@
 // Unlock codes are Ed25519 signatures over the studio name and year, made with
 // scripts/make-unlock-code.mjs or by the Stripe webhook (functions/api/stripe-webhook.js).
-// Pages only hold the public key. Unlocked member links carry the code, and the recap page
-// checks it, so deleting the preview flag from a link doesn't remove the PREVIEW mark.
+// Pages only hold the public key. With CONFIG.signedLinks on, unlocked member links carry the code
+// and the recap page checks it, so deleting the preview flag from a link doesn't remove PREVIEW.
 
 // Letters and digits in any script; case, spaces and punctuation don't matter.
 export function normalizeStudioName(studioName) {
@@ -49,7 +49,7 @@ export function cleanCode(code) {
   return String(code || '').replace(/\s+/g, '');
 }
 
-// Whether a member link's studio block (`s`) is unlocked: it must carry a code that matches
+// With signed links on: whether a member link's studio block (`s`) is unlocked. It must carry a code that matches
 // its own studio name and year. A browser that can't check Ed25519 gets the benefit of the doubt
 // for a link that carries a code, so members on older phones don't see PREVIEW on a paid recap;
 // the owner's tool already refused to make unlocked links without a valid code.
