@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Your year in review</title>
+  <link rel="stylesheet" href="css/recap.css">
+</head>
+<body>
+  <main id="story"></main>
+  <p id="status" class="sr-only" aria-live="polite"></p>
+  <div class="saveimg" id="saveimg" role="dialog" aria-modal="true" aria-labelledby="saveimgText" hidden>
+    <img id="saveimgPic" alt="Your year in review image">
+    <p id="saveimgText"></p>
+    <a id="saveimgLink" download="my-year.png">Download image</a>
+    <button type="button" id="saveimgClose">Close</button>
+  </div>
+  <script type="module" src="js/recap.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "studio-recap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Year-in-review recaps for boutique fitness studios. Static site, no server.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "demo-data": "node scripts/make-demo-data.mjs",
+    "serve": "npx --yes serve public"
+  },
+  "engines": { "node": ">=20" }
+}
