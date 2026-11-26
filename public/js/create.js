@@ -7,10 +7,11 @@ import { encodePayload, memberPayload } from './lib/codec.js';
 import { verifyUnlock, ed25519Supported, normalizeStudioName, cleanCode } from './lib/unlock.js';
 import { safeUrl } from './lib/cards.js';
 import { pickSampleMembers } from './lib/samples.js';
+import { purchaseCovers } from './lib/purchase.js';
 import { makeStudioImage } from './share.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, unlockCode: '', selected: null, shown: null, fileName: '' };
+const state = { header: [], rows: [], mapping: {}, result: null, unlocked: false, unlockCode: '', account: null, selected: null, shown: null, fileName: '' };
 
 document.querySelectorAll('[data-product-name]').forEach((e) => { e.textContent = CONFIG.productName; });
 if (safeUrl(CONFIG.paymentLink)) {
@@ -305,33 +306,145 @@ function refreshPreview() {
   }, 150);
 }
 
-// ---------- Step 5: unlock and download ----------
+// ---------- Account, checkout, and the unlock code ----------
+function typedStudioName() { return $('sName').value.trim(); }
+
+function paidForThisStudio() {
+  const purchases = state.account && state.account.purchases;
+  return purchaseCovers(purchases, typedStudioName(), studio().year);
+}
+
+function paintAccount() {
+  const email = state.account && state.account.email;
+  const paid = paidForThisStudio();
+  if (email) {
+    $('accountMsg').textContent = `Signed in as ${email}.`;
+    $('buyerEmail').hidden = true;
+    $('signInRow').hidden = true;
+  } else {
+    $('accountMsg').textContent = '';
+    $('buyerEmail').hidden = false;
+    $('signInRow').hidden = false;
+  }
+  const n = state.result && state.result.summary.members;
+  $('buyList').textContent = n ? `Unlock all ${n.toLocaleString('en-US')} links` : 'Unlock the rest';
+  $('buyRow').hidden = paid;
+}
+
+async function refreshAccount() {
+  try {
+    const res = await fetch('/api/me');
+    state.account = res.ok ? await res.json() : null;
+  } catch {
+    state.account = null;
+  }
+  paintAccount();
+  await checkUnlock();
+}
+
+function buyerEmail() {
+  return ((state.account && state.account.email) || $('buyerEmail').value || '').trim();
+}
+
+function validBuyerEmail(email) {
+  return email.length > 0 && email.length <= 200 && !/\s/.test(email) && email.split('@').length === 2 && email[0] !== '@' && !email.endsWith('@');
+}
+
+$('buyList').addEventListener('click', async () => {
+  if (!state.result) return;
+  const name = typedStudioName();
+  const year = studio().year;
+  const email = buyerEmail();
+  if (!normalizeStudioName(name)) { setMsg('buyMsg', 'Add your studio name in step 3 first.', 'err'); return; }
+  if (!year) { setMsg('buyMsg', 'Pick a year in step 3 first.', 'err'); return; }
+  if (!validBuyerEmail(email)) { setMsg('buyMsg', 'Add the email for the receipt and sign-in.', 'err'); return; }
+  $('buyList').disabled = true;
+  setMsg('buyMsg', 'Opening checkout...');
+  try {
+    const res = await fetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studioName: name, year, email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || typeof data.url !== 'string' || !data.url.startsWith('https://')) {
+      setMsg('buyMsg', res.status === 500 ? "Checkout isn't set up on this site yet." : "Checkout didn't start. Try again.", 'err');
+      $('buyList').disabled = false;
+      return;
+    }
+    location.href = data.url;
+  } catch {
+    setMsg('buyMsg', "Checkout didn't start. Try again.", 'err');
+    $('buyList').disabled = false;
+  }
+});
+
+$('signInBtn').addEventListener('click', async () => {
+  const email = buyerEmail();
+  if (!validBuyerEmail(email)) { setMsg('buyMsg', 'Add the email to send the sign-in link to.', 'err'); return; }
+  $('signInBtn').disabled = true;
+  setMsg('buyMsg', 'Sending a sign-in link...');
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (res.ok) setMsg('buyMsg', `Check ${email} for a sign-in link. It expires in 15 minutes.`, 'ok');
+    else if (res.status === 500) setMsg('buyMsg', "Sign-in isn't set up on this site yet.", 'err');
+    else setMsg('buyMsg', "The sign-in email didn't send. Try again.", 'err');
+  } catch {
+    setMsg('buyMsg', "The sign-in email didn't send. Try again.", 'err');
+  }
+  $('signInBtn').disabled = false;
+});
+
 let unlockSeq = 0;
 async function checkUnlock() {
   const seq = ++unlockSeq;
   const code = $('code').value.trim();
   const s = studio();
-  let ok = false, msg = '', cls = '';
-  if (!CONFIG.unlockPublicKey) {
-    msg = 'Unlocking isn\'t set up on this site yet, so only two sample members are ready to view and send.'; cls = 'hint';
+  const paid = paidForThisStudio();
+  let codeOk = false, msg = '', cls = '';
+  if (paid && !code) {
+    msg = `Unlocked for ${s.name}, ${s.year}.`; cls = 'ok';
+  } else if (!CONFIG.unlockPublicKey) {
+    if (!paid && state.result) { msg = 'Unlocking isn\'t set up on this site yet, so only two sample members are ready to view and send.'; cls = 'hint'; }
   } else if (!code) {
     msg = '';
-  } else if (!normalizeStudioName(s.name)) {
+  } else if (!normalizeStudioName(typedStudioName())) {
     msg = 'Add your studio name in step 3 first.'; cls = 'err';
   } else if (!(await ed25519Supported())) {
     msg = 'This browser is too old to check unlock codes. Update it, or use a current Chrome, Safari, Edge or Firefox.'; cls = 'err';
   } else {
-    ok = await verifyUnlock(code, s.name, s.year, CONFIG.unlockPublicKey);
-    msg = ok ? `Unlocked for ${s.name}, ${s.year}.` : 'That code doesn\'t match this studio name and year. Check both match your code email: the name as you typed it when you paid, and the year you picked.';
-    cls = ok ? 'ok' : 'err';
+    codeOk = await verifyUnlock(code, s.name, s.year, CONFIG.unlockPublicKey);
+    if (codeOk) { msg = `Unlocked for ${s.name}, ${s.year}.`; cls = 'ok'; }
+    else if (paid) { msg = `That code doesn't match, but ${s.name} ${s.year} is already paid, so the full list is unlocked.`; cls = 'ok'; }
+    else { msg = 'That code doesn\'t match this studio name and year. Check both match your code email: the name as you typed it when you paid, and the year you picked.'; cls = 'err'; }
   }
   if (seq !== unlockSeq) return; // a newer check started while this one ran
-  const newCode = ok ? cleanCode(code) : '';
+  const ok = codeOk || paid;
+  const newCode = codeOk ? cleanCode(code) : '';
   if (ok !== state.unlocked || newCode !== state.unlockCode) { state.unlocked = ok; state.unlockCode = newCode; refreshPreview(); }
   setMsg('unlockMsg', msg, cls);
+  paintAccount();
 }
 $('unlockBtn').addEventListener('click', checkUnlock);
 $('code').addEventListener('change', checkUnlock);
+
+const checkoutFlag = new URLSearchParams(location.search).get('checkout');
+if (checkoutFlag === 'cancel') setMsg('buyMsg', 'Checkout was canceled. Your two samples are still here.', 'hint');
+if (checkoutFlag === 'success') setMsg('buyMsg', 'Payment received. Sign in with the same email and the full list unlocks here.', 'ok');
+
+refreshAccount().then(() => {
+  if (checkoutFlag !== 'success' || !(state.account && state.account.email)) return;
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    await refreshAccount();
+    if (paidForThisStudio() || tries >= 5) clearInterval(timer);
+  }, 2000);
+});
 
 function download(blob, name) {
   const url = URL.createObjectURL(blob);
