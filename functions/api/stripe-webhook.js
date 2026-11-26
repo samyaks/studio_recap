@@ -9,10 +9,15 @@
 //   SITE_URL               optional, e.g. https://studiorecap.com (defaults to this site)
 //   OWNER_EMAIL            your own address: a note for every sale, and for any sale it couldn't handle
 //   UNLOCK_SENT            optional KV binding, so Stripe's retries don't send a second email
+//   DB                     optional D1 binding. After the code email goes out, one row is inserted
+//                          into purchases (id, user_email, studio_name, studio_key, year, status, created_at).
+//                          A failed insert is logged and still returns success, so Stripe does not resend the email.
 //   PAYMENT_LINK_ID        optional (plink_...): only checkouts from this payment link get codes,
-//                          so sales of other products on the same Stripe account are left alone
-// On the Stripe payment link, add two custom fields: a required text field with key "studioname"
-// and a required dropdown with key "recapyear" (one option per year you sell, such as 2026).
+//                          so sales of other products on the same Stripe account are left alone.
+//                          A Checkout Session from /api/checkout has no payment link; it still gets a code
+//                          when it carries metadata studio_name, year and studio_key.
+// Checkout Sessions from /api/checkout store metadata studio_name, year and studio_key.
+// An old payment link still works: custom fields "studioname" and "recapyear" are the fallback.
 import { verifyStripeSignature } from '../../server/stripe.js';
 import { makeUnlockCode } from '../../server/sign-code.js';
 import { sendMail } from '../../server/mail.js';
@@ -44,10 +49,21 @@ function yearIn(v) {
   return m ? Number(m[1]) : null;
 }
 
+function metaString(session, key) {
+  const m = session.metadata;
+  if (!m || typeof m !== 'object') return '';
+  const v = m[key];
+  if (typeof v === 'string' || typeof v === 'number') return String(v);
+  return '';
+}
+
 // The year the studio is buying a recap for. Without the dropdown, January and February sales
 // are for the year just ended.
 // Returns { year, guessed }. The dropdown's value is used, or the year in its option label.
 export function recapYear(session, now = new Date()) {
+  // Checkout Sessions carry the year in metadata. Payment links use the dropdown below.
+  const fromMeta = metaString(session, 'year').trim();
+  if (/^(?:20\d\d|2100)$/.test(fromMeta)) return { year: Number(fromMeta), guessed: false };
   const f = findField(session, 'recapyear');
   let y = yearIn(field(session, 'recapyear'));
   if (!y && f && f.dropdown) {
@@ -69,6 +85,27 @@ async function markSent(env, key) {
   try { await env.UNLOCK_SENT.put(key, '1', { expirationTtl: 60 * 60 * 24 * 90 }); } catch (e) { console.error('could not record sent', key, e.message); }
 }
 
+const PURCHASE_SQL = `INSERT INTO purchases (id, user_email, studio_name, studio_key, year, status, created_at)
+VALUES (?, ?, ?, ?, ?, 'paid', ?)
+ON CONFLICT(id) DO NOTHING`;
+
+// Checkout metadata wins when it is set; otherwise the key is the normalized display name.
+function studioKeyFrom(session, name) {
+  const fromMeta = metaString(session, 'studio_key').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]+/g, '').trim();
+  if (fromMeta) return fromMeta;
+  return normalizeStudioName(name);
+}
+
+// The code email has already gone out. A database failure must not make Stripe resend it.
+async function recordPurchase(env, row) {
+  if (!env.DB || typeof env.DB.prepare !== 'function') return;
+  try {
+    await env.DB.prepare(PURCHASE_SQL).bind(row.id, row.user_email, row.studio_name, row.studio_key, row.year, row.created_at).run();
+  } catch (e) {
+    console.error('could not record purchase', row.id, e.message);
+  }
+}
+
 async function tellOwner(env, subject, text, fetchImpl) {
   if (!env.OWNER_EMAIL) return;
   try { await sendMail(env, { to: env.OWNER_EMAIL, subject, text }, fetchImpl); } catch (e) { console.error('owner note failed', e.message); }
@@ -84,14 +121,17 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
   if (!HANDLED.has(event.type)) return json({ ignored: event.type });
   const session = (event.data && event.data.object) || {};
   if (!PAID.has(session.payment_status)) return json({ ignored: 'not paid yet' });
-  if (env.PAYMENT_LINK_ID && session.payment_link !== env.PAYMENT_LINK_ID) {
+  // Sessions started by /api/checkout have no payment link. They are identified by metadata instead.
+  const fromCheckout = metaString(session, 'studio_name').trim() && metaString(session, 'year').trim() && metaString(session, 'studio_key').trim();
+  if (env.PAYMENT_LINK_ID && session.payment_link !== env.PAYMENT_LINK_ID && !fromCheckout) {
     // Logged so a test-mode id left in PAYMENT_LINK_ID after going live shows up in the logs.
     console.log('checkout from another payment link', session.id, session.payment_link || 'none');
     return json({ ignored: 'another product' });
   }
 
   const product = env.PRODUCT_NAME || 'Studio Recap';
-  const rawName = cleanName(field(session, 'studioname'));
+  const fromMeta = cleanName(metaString(session, 'studio_name'));
+  const rawName = fromMeta || cleanName(field(session, 'studioname'));
   const { year, guessed } = recapYear(session, new Date(now));
   const email = session.customer_details && session.customer_details.email;
   const problem = !email ? 'no buyer email'
@@ -145,6 +185,14 @@ export async function handleStripeWebhook(request, env, { fetchImpl = fetch, now
     return json({ error: 'mail failed' }, 502); // Stripe retries
   }
   await markSent(env, doneKey);
+  await recordPurchase(env, {
+    id: session.id,
+    user_email: email,
+    studio_name: name,
+    studio_key: studioKeyFrom(session, name),
+    year,
+    created_at: new Date(now).toISOString(),
+  });
   await tellOwner(env, `${product} sale: ${name} (${year})`,
     `Code sent to ${email} for checkout ${session.id}.${guessed ? `\nThe order had no year, so ${year} was assumed. Check with the buyer.` : ''}`, fetchImpl);
   return json({ handled: true });
