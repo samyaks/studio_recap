@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { handleStripeWebhook, recapYear } from '../functions/api/stripe-webhook.js';
+import { handleCheckout } from '../functions/api/checkout.js';
 import { handleClientError } from '../functions/api/client-error.js';
 import { signPayload, verifyStripeSignature } from '../server/stripe.js';
 import { makeUnlockCode } from '../server/sign-code.js';
-import { verifyUnlock } from '../public/js/lib/unlock.js';
+import { normalizeStudioName, verifyUnlock } from '../public/js/lib/unlock.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const PUB = publicKey.export({ format: 'jwk' }).x;
@@ -208,4 +209,234 @@ test('webhook: a redelivered needs-a-hand event sends no second notes, and a KV 
   const m2 = mailer();
   const res = await handleStripeWebhook(await signedRequest(paid()), env({ UNLOCK_SENT: broken }), { fetchImpl: m2.fetchImpl, now: NOW });
   assert.equal(res.status, 200);
+});
+
+const PRICE = 'price_test_example';
+const STRIPE_KEY = 'sk_test_example';
+
+function checkoutEnv(extra = {}) {
+  return { STRIPE_SECRET_KEY: STRIPE_KEY, STRIPE_PRICE_ID: PRICE, SITE_URL: 'https://recap.example.com/', ...extra };
+}
+
+function checkoutRequest(body, url = 'https://recap.example.com/api/checkout') {
+  const raw = typeof body === 'string' ? body : JSON.stringify(body);
+  return new Request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: raw });
+}
+
+function purchaseDb() {
+  const rows = [];
+  const calls = [];
+  return {
+    rows,
+    calls,
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async run() {
+              calls.push({ sql, args });
+              const id = args[0];
+              if (/on conflict\s*\(\s*id\s*\)\s*do nothing/i.test(sql) && rows.some((r) => r.id === id)) return { meta: { changes: 0 } };
+              rows.push({ id: args[0], user_email: args[1], studio_name: args[2], studio_key: args[3], year: args[4], created_at: args[5] });
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test('checkout: a bad email, a bad year, or a missing secret never calls Stripe', async () => {
+  const calls = [];
+  const fetchImpl = async (...args) => { calls.push(args); return new Response('{}', { status: 200 }); };
+  const good = { studioName: 'Juniper Yoga', year: 2026, email: 'owner@studio.example' };
+  const cases = [
+    [{ ...good, email: 'not-an-email' }, 400],
+    [{ ...good, email: 'owner studio@example.com' }, 400],
+    [{ ...good, email: 'a@b@c.com' }, 400],
+    [{ ...good, email: `${'a'.repeat(190)}@example.com` }, 400],
+    [{ ...good, year: 1999 }, 400],
+    [{ ...good, year: 2101 }, 400],
+    [{ ...good, year: 2026.5 }, 400],
+    [{ ...good, year: 'nope' }, 400],
+    [{ ...good, studioName: '!!!' }, 400],
+    [{ ...good, studioName: 'x'.repeat(121) }, 400],
+  ];
+  for (const [body, status] of cases) {
+    const res = await handleCheckout(checkoutRequest(body), checkoutEnv(), { fetchImpl });
+    assert.equal(res.status, status);
+    const payload = await res.json();
+    assert.equal(typeof payload.error, 'string');
+    assert.ok(payload.error);
+  }
+  const noKey = await handleCheckout(checkoutRequest(good), checkoutEnv({ STRIPE_SECRET_KEY: '' }), { fetchImpl });
+  assert.equal(noKey.status, 500);
+  assert.deepEqual(await noKey.json(), { error: 'not set up' });
+  const noPrice = await handleCheckout(checkoutRequest(good), checkoutEnv({ STRIPE_PRICE_ID: undefined }), { fetchImpl });
+  assert.equal(noPrice.status, 500);
+  assert.deepEqual(await noPrice.json(), { error: 'not set up' });
+  const junk = await handleCheckout(checkoutRequest('not json'), checkoutEnv(), { fetchImpl });
+  assert.equal(junk.status, 400);
+  const big = await handleCheckout(checkoutRequest({ ...good, pad: 'x'.repeat(9000) }), checkoutEnv(), { fetchImpl });
+  assert.equal(big.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test('checkout: posts a urlencoded session and returns the url', async () => {
+  const logged = [];
+  const origError = console.error;
+  const origLog = console.log;
+  console.error = (...a) => logged.push(a.join(' '));
+  console.log = (...a) => logged.push(a.join(' '));
+  try {
+    let captured;
+    const fetchImpl = async (url, init) => {
+      captured = { url, init };
+      return new Response(JSON.stringify({ id: 'cs_123', url: 'https://checkout.stripe.com/c/pay/cs_123', client_secret: STRIPE_KEY }), { status: 200 });
+    };
+    const res = await handleCheckout(checkoutRequest({ studioName: '  Juniper Yoga + Pilates\n', year: 2026, email: 'owner@studio.example' }), checkoutEnv(), { fetchImpl });
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.deepEqual(payload, { url: 'https://checkout.stripe.com/c/pay/cs_123' });
+    assert.doesNotMatch(JSON.stringify(payload), /sk_test/);
+    assert.equal(captured.url, 'https://api.stripe.com/v1/checkout/sessions');
+    assert.equal(captured.init.method, 'POST');
+    assert.equal(captured.init.headers.Authorization, `Bearer ${STRIPE_KEY}`);
+    assert.equal(captured.init.headers['Content-Type'], 'application/x-www-form-urlencoded');
+    const params = new URLSearchParams(captured.init.body);
+    assert.equal(params.get('mode'), 'payment');
+    assert.equal(params.get('line_items[0][price]'), PRICE);
+    assert.equal(params.get('line_items[0][quantity]'), '1');
+    assert.equal(params.get('customer_email'), 'owner@studio.example');
+    assert.equal(params.get('client_reference_id'), `${normalizeStudioName('Juniper Yoga + Pilates')}:2026`);
+    assert.equal(params.get('metadata[studio_name]'), 'Juniper Yoga + Pilates');
+    assert.equal(params.get('metadata[year]'), '2026');
+    assert.equal(params.get('metadata[studio_key]'), normalizeStudioName('Juniper Yoga + Pilates'));
+    assert.equal(params.get('success_url'), 'https://recap.example.com/create.html?checkout=success');
+    assert.equal(params.get('cancel_url'), 'https://recap.example.com/create.html?checkout=cancel');
+    assert.equal(params.get('allow_promotion_codes'), 'true');
+    assert.match(captured.init.body, /%5B|mode=payment/);
+
+    const originFetch = async (url, init) => {
+      captured = { url, init };
+      return new Response(JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_origin' }), { status: 200 });
+    };
+    const fromOrigin = await handleCheckout(
+      checkoutRequest({ studioName: 'Core\r\nStudio', year: 2100, email: 'a@b.co' }, 'https://studio.example/api/checkout'),
+      checkoutEnv({ SITE_URL: '' }),
+      { fetchImpl: originFetch },
+    );
+    assert.equal(fromOrigin.status, 200);
+    const originParams = new URLSearchParams(captured.init.body);
+    assert.equal(originParams.get('metadata[studio_name]'), 'Core Studio');
+    assert.equal(originParams.get('success_url'), 'https://studio.example/create.html?checkout=success');
+    assert.equal(originParams.get('cancel_url'), 'https://studio.example/create.html?checkout=cancel');
+    assert.equal(originParams.get('client_reference_id'), 'corestudio:2100');
+
+    const failed = await handleCheckout(checkoutRequest({ studioName: 'Juniper', year: 2000, email: 'a@b.co' }), checkoutEnv(), {
+      fetchImpl: async () => new Response(JSON.stringify({ error: { message: 'no such price', key: STRIPE_KEY, email: 'a@b.co' } }), { status: 400 }),
+    });
+    assert.equal(failed.status, 502);
+    const failedBody = await failed.text();
+    assert.deepEqual(JSON.parse(failedBody), { error: 'checkout failed' });
+    assert.doesNotMatch(failedBody, /sk_test|a@b\.co|no such price/);
+    const thrown = await handleCheckout(checkoutRequest({ studioName: 'Juniper', year: 2000, email: 'a@b.co' }), checkoutEnv(), {
+      fetchImpl: async () => { throw new Error(`network ${STRIPE_KEY} a@b.co`); },
+    });
+    assert.equal(thrown.status, 502);
+    assert.deepEqual(await thrown.json(), { error: 'checkout failed' });
+    const notes = logged.join('\n');
+    assert.doesNotMatch(notes, /sk_test_example/);
+    assert.doesNotMatch(notes, /a@b\.co/);
+    assert.match(notes, /checkout failed/);
+  } finally {
+    console.error = origError;
+    console.log = origLog;
+  }
+});
+
+test('webhook: a paid checkout records one purchase, and a second delivery does not add another', async () => {
+  const db = purchaseDb();
+  const { fetchImpl } = mailer();
+  const res = await handleStripeWebhook(await signedRequest(paid()), env({ DB: db }), { fetchImpl, now: NOW });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { handled: true });
+  assert.equal(db.rows.length, 1);
+  assert.equal(db.calls.length, 1);
+  assert.equal(db.calls[0].sql, `INSERT INTO purchases (id, user_email, studio_name, studio_key, year, status, created_at)
+VALUES (?, ?, ?, ?, ?, 'paid', ?)
+ON CONFLICT(id) DO NOTHING`);
+  assert.deepEqual(db.rows[0], {
+    id: 'cs_test_1',
+    user_email: 'owner@studio.example',
+    studio_name: 'Juniper Yoga + Pilates',
+    studio_key: 'juniperyogapilates',
+    year: 2026,
+    created_at: '2026-12-03T18:00:00.000Z',
+  });
+  const again = await handleStripeWebhook(await signedRequest(paid()), env({ DB: db }), { fetchImpl, now: NOW });
+  assert.equal(again.status, 200);
+  assert.equal(db.calls.length, 2);
+  assert.equal(db.rows.length, 1);
+
+  const quiet = purchaseDb();
+  const notes = mailer();
+  await handleStripeWebhook(await signedRequest(paid(session({ custom_fields: [] }))), env({ DB: quiet, OWNER_EMAIL: 'me@example.com' }), { fetchImpl: notes.fetchImpl, now: NOW });
+  await handleStripeWebhook(await signedRequest(paid(session({ customer_details: {} }))), env({ DB: quiet, OWNER_EMAIL: 'me@example.com' }), { fetchImpl: notes.fetchImpl, now: NOW });
+  assert.equal(quiet.calls.length, 0);
+
+  const down = { prepare() { return { bind() { return { async run() { throw new Error('d1 down'); } }; } }; } };
+  const mailed = mailer();
+  const logged = [];
+  const orig = console.error;
+  console.error = (...a) => logged.push(a.join(' '));
+  try {
+    const kept = await handleStripeWebhook(await signedRequest(paid()), env({ DB: down }), { fetchImpl: mailed.fetchImpl, now: NOW });
+    assert.equal(kept.status, 200);
+    assert.deepEqual(await kept.json(), { handled: true });
+    assert.equal(mailed.sent.length, 1);
+    assert.match(logged.join('\n'), /could not record purchase/);
+    assert.doesNotMatch(logged.join('\n'), /owner@studio\.example/);
+  } finally {
+    console.error = orig;
+  }
+
+  const unsent = purchaseDb();
+  const bounced = mailer(500);
+  const retry = await handleStripeWebhook(await signedRequest(paid()), env({ DB: unsent }), { fetchImpl: bounced.fetchImpl, now: NOW });
+  assert.equal(retry.status, 502);
+  assert.equal(unsent.calls.length, 0);
+});
+
+test('webhook: metadata studio name, year and key win over payment-link fields', async () => {
+  const db = purchaseDb();
+  const { sent, fetchImpl } = mailer();
+  const s = session({
+    id: 'cs_meta',
+    metadata: { studio_name: '  North\nStudio ', year: '2025', studio_key: 'northstudio' },
+  });
+  const res = await handleStripeWebhook(await signedRequest(paid(s)), env({ DB: db, PAYMENT_LINK_ID: 'plink_recap' }), { fetchImpl, now: NOW });
+  assert.equal(res.status, 200);
+  assert.match(sent[0].body.text, /for North Studio \(2025\)/);
+  assert.doesNotMatch(sent[0].body.text, /Juniper/);
+  const code = sent[0].body.text.split('\n')[3];
+  assert.equal(await verifyUnlock(code, 'north studio', 2025, PUB), true);
+  assert.equal(await verifyUnlock(code, 'juniper yoga pilates', 2026, PUB), false);
+  assert.equal(db.rows.length, 1);
+  assert.equal(db.rows[0].studio_name, 'North Studio');
+  assert.equal(db.rows[0].studio_key, 'northstudio');
+  assert.equal(db.rows[0].year, 2025);
+  assert.deepEqual(recapYear(s), { year: 2025, guessed: false });
+
+  const onlyMeta = session({
+    id: 'cs_meta_only',
+    custom_fields: [],
+    metadata: { studio_name: 'Only Meta', year: 2100, studio_key: 'onlymeta' },
+  });
+  const second = mailer();
+  await handleStripeWebhook(await signedRequest(paid(onlyMeta)), env({ DB: db }), { fetchImpl: second.fetchImpl, now: NOW });
+  assert.match(second.sent[0].body.text, /for Only Meta \(2100\)/);
+  assert.equal(db.rows[1].studio_key, 'onlymeta');
+  assert.equal(db.rows[1].year, 2100);
 });
