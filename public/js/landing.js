@@ -21,7 +21,7 @@ const sample = {
   s: { n: SAMPLE_STUDIO.name, y: SAMPLE_STUDIO.year, h: 'juniperyoga', c: '#1f4d3a', a: '#f2c14e', b: 'https://example.com/book',
     t: 'Thank you for showing up for yourself this year. We loved every class with you.', o: 'Bring a friend free to any class in January' },
   k: 'r', f: 'Maya',
-  m: { n: 142, mn: 7380, fc: ['Sunrise Vinyasa', 51], fi: ['Marisol', 38], st: 19, bm: [3, 18], dw: 5, et: 360, pc: 94 },
+  m: { n: 142, mn: 7380, fc: ['Sunrise Vinyasa', 51], fi: ['Marisol', 38], st: 19, bm: [3, 18] },
 };
 // The sample carries a real code for the made-up studio, so it shows unlocked once the site has keys.
 if (CONFIG.demoUnlockCode) sample.s.u = CONFIG.demoUnlockCode;

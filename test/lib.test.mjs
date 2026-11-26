@@ -8,6 +8,7 @@ import { guessMapping, findHeaderRow, applyMapping } from '../public/js/lib/mapp
 import { computeRecaps, planType } from '../public/js/lib/stats.js';
 import { encodePayload, decodePayload, memberPayload } from '../public/js/lib/codec.js';
 import { verifyUnlock, unlockMessage, linkUnlocked } from '../public/js/lib/unlock.js';
+import { buildCards } from '../public/js/lib/cards.js';
 import { textOn, safeHex } from '../public/js/lib/color.js';
 
 test('csv: quotes, commas, newlines, BOM, semicolons', () => {
@@ -179,4 +180,18 @@ test('demo data: end to end', () => {
   assert.equal(summary.problems.badDate, 0);
   assert.ok(summary.problems.skippedStatus > 500, 'demo no-shows should be skipped');
   assert.ok(members.every((m) => m.firstName));
+});
+
+test('cards: three stat cards and a closing card that names the studio; link leaves out unused stats', async () => {
+  const member = { kind: 'recap', firstName: 'Ava', total: 120, minutes: 6000, favoriteClass: ['Flow', 40], favoriteInstructor: ['Ann', 30], streak: 12, busiestMonth: [3, 15], favoriteDay: [5, 30], earliest: 360, percentile: 91 };
+  const payload = memberPayload(member, { name: 'Test Studio', year: 2026 }, { preview: false });
+  assert.equal(payload.m.dw, undefined);
+  assert.equal(payload.m.et, undefined);
+  assert.equal(payload.m.pc, undefined);
+  const cards = buildCards(await decodePayload(await encodePayload(payload)));
+  assert.equal(cards.length, 4);
+  assert.deepEqual(cards.map((c) => c.id), ['total', 'class', 'streak', 'outro']);
+  assert.match(cards[3].eyebrow, /Test Studio/);
+  const sparse = buildCards({ s: { n: 'X', y: 2026 }, k: 'r', f: '', m: { n: 3, mn: 150 } });
+  assert.deepEqual(sparse.map((c) => c.id), ['total', 'outro']);
 });

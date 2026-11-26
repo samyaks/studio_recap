@@ -67,9 +67,7 @@ export function memberPayload(member, studio, { preview, short = false, unlockCo
     if (member.favoriteInstructor && member.favoriteInstructor[1] >= 2) m.fi = member.favoriteInstructor;
     if (member.streak >= 2) m.st = member.streak;
     if (member.busiestMonth && member.busiestMonth[1] >= 2) m.bm = member.busiestMonth;
-    if (member.favoriteDay) m.dw = member.favoriteDay[0];
-    if (member.earliest != null) m.et = member.earliest;
-    if (member.percentile >= 50) m.pc = member.percentile;
+    // Only what the recap cards show goes in the link, to keep it short.
     out.m = m;
   }
   return out;

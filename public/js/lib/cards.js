@@ -47,7 +47,7 @@ export function buildCards(p) {
   if (m.bm) picks.push({ id: 'month', eyebrow: 'Your biggest month', big: MONTH_NAMES[m.bm[0] - 1], sub: `${m.bm[1]} classes` });
   cards.push(...picks.slice(0, 2));
   cards.push({
-    id: 'outro', eyebrow: 'Thank you', big: `See you in ${year + 1}`,
+    id: 'outro', eyebrow: `Thank you from ${studio}`, big: `See you in ${year + 1}`,
     line: s.t || `Thanks for a great year, ${first || 'friend'}.`,
     offer: s.o || '', outro: true, share: true,
   });

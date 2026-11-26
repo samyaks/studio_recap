@@ -1,6 +1,6 @@
 # Studio Recap
 
-A year-in-review for boutique fitness studios. The studio uploads one attendance spreadsheet; every member gets a personal recap page (classes, favorite class and instructor, streak, biggest month) that ends with a one-tap Instagram story image. Members below a visit minimum get a warm welcome-back note with no numbers instead.
+A year-in-review for boutique fitness studios. The studio uploads one attendance spreadsheet; every member gets a personal recap page (classes taken plus two highlights, such as favorite class, streak, favorite instructor or biggest month) that ends with a one-tap Instagram story image. Members below a visit minimum get a warm welcome-back note with no numbers instead.
 
 It is a static site with two small Cloudflare Pages Functions (the Stripe webhook that emails unlock codes, and a script-error log) and no database. The spreadsheet is read in the studio owner's browser and never uploaded. Each member's stats are compressed into their own link after the `#`, which browsers never send to a server.
 
@@ -13,7 +13,7 @@ It is a static site with two small Cloudflare Pages Functions (the Stripe webhoo
 ## Run it locally
 
 ```
-npm test            # 38 tests, no installs needed (Node 20+)
+npm test            # 39 tests, no installs needed (Node 20+)
 npx serve public    # then open http://localhost:3000
 ```
 
