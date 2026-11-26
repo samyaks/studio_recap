@@ -10,6 +10,7 @@ import { encodePayload, decodePayload, memberPayload } from '../public/js/lib/co
 import { verifyUnlock, unlockMessage, linkUnlocked } from '../public/js/lib/unlock.js';
 import { buildCards } from '../public/js/lib/cards.js';
 import { textOn, safeHex } from '../public/js/lib/color.js';
+import { pickSampleMembers } from '../public/js/lib/samples.js';
 
 test('csv: quotes, commas, newlines, BOM, semicolons', () => {
   const rows = parseCSV('﻿a,b,c\r\n"x, y","he said ""hi""","line\nbreak"\n\n');
@@ -180,6 +181,43 @@ test('demo data: end to end', () => {
   assert.equal(summary.problems.badDate, 0);
   assert.ok(summary.problems.skippedStatus > 500, 'demo no-shows should be skipped');
   assert.ok(members.every((m) => m.firstName));
+});
+
+test('samples: busiest recap plus a welcome', () => {
+  const tiedHighKey = { key: 'b', total: 20, kind: 'recap' };
+  const tiedLowKey = { key: 'a', total: 20, kind: 'recap' };
+  const welcome = { key: 'm', total: 3, kind: 'welcome' };
+  const quieterWelcome = { key: 'z', total: 1, kind: 'welcome' };
+  const input = [tiedHighKey, quieterWelcome, welcome, tiedLowKey];
+  const before = input.map((m) => m.key);
+  const picked = pickSampleMembers(input);
+  assert.deepEqual(input.map((m) => m.key), before);
+  assert.equal(picked.length, 2);
+  assert.equal(picked[0], tiedLowKey);
+  assert.equal(picked[1], welcome);
+});
+
+test('samples: busiest already welcome so the next member is included', () => {
+  const busy = { key: 'm', total: 9, kind: 'welcome' };
+  const next = { key: 'c', total: 4, kind: 'recap' };
+  const sameTotalEarlierKey = { key: 'b', total: 4, kind: 'recap' };
+  const laterWelcome = { key: 'a', total: 2, kind: 'welcome' };
+  const input = [laterWelcome, next, busy, sameTotalEarlierKey];
+  const picked = pickSampleMembers(input);
+  assert.deepEqual(input.map((m) => m.key), ['a', 'c', 'm', 'b']);
+  assert.equal(picked.length, 2);
+  assert.equal(picked[0], busy);
+  assert.equal(picked[1], sameTotalEarlierKey);
+});
+
+test('samples: a single member', () => {
+  const only = { key: 'solo', total: 2, kind: 'welcome' };
+  assert.deepEqual(pickSampleMembers([only]), [only]);
+  assert.equal(pickSampleMembers([only])[0], only);
+});
+
+test('samples: empty input', () => {
+  assert.deepEqual(pickSampleMembers([]), []);
 });
 
 test('cards: three stat cards and a closing card that names the studio; link leaves out unused stats', async () => {
